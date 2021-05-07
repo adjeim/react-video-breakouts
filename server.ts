@@ -17,6 +17,8 @@ const options: cors.CorsOptions = {
   origin: allowedOrigins
 };
 
+app.use(cors(options));
+
 export interface VideoRoom {
   _id: string,
   _rev: string;
