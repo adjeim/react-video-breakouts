@@ -15,6 +15,8 @@ const options: cors.CorsOptions = {
   origin: allowedOrigins
 };
 
+app.use(cors(options));
+
 app.listen(port, () => {
   console.log(`Express server running on port ${port}`);
 });
