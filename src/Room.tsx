@@ -1,19 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { Room as VideoRoom } from 'twilio-video';
-import { VideoRoomListItem } from './App';
+import { BreakoutRoom } from './App';
 import Participant from './Participant';
 
 interface RoomProps {
   room: VideoRoom;
+  breakoutRoomList: BreakoutRoom[];
+  parentSid: string;
   joinRoom: (roomSid: string, breakout: boolean) => void;
   leaveRoom: () => void;
-  showControls: boolean;
-  breakoutRoomList: VideoRoomListItem[];
-  parentSid: string;
 }
 
-const Room = ({ room, leaveRoom, joinRoom, breakoutRoomList, parentSid }: RoomProps) => {
-
+const Room = ({ room, breakoutRoomList, parentSid, joinRoom, leaveRoom }: RoomProps) => {
   const [remoteParticipants, setRemoteParticipants] = useState(Array.from(room.participants.values()));
 
   // Whenever the room changes, set up listeners
@@ -36,7 +34,6 @@ const Room = ({ room, leaveRoom, joinRoom, breakoutRoomList, parentSid }: RoomPr
       return joinRoom(parentSid, false);
     }
     return joinRoom(sid, true);
-
   }
 
   return (
@@ -46,8 +43,7 @@ const Room = ({ room, leaveRoom, joinRoom, breakoutRoomList, parentSid }: RoomPr
         <Participant
           key={room.localParticipant.identity}
           participant={room.localParticipant} />
-        {
-          remoteParticipants.map((participant) =>
+        { remoteParticipants.map((participant) =>
             <Participant
               key={participant.identity}
               participant={participant} />
@@ -59,8 +55,7 @@ const Room = ({ room, leaveRoom, joinRoom, breakoutRoomList, parentSid }: RoomPr
           <h3>Breakout Rooms</h3>
         }
 
-        {
-          breakoutRoomList.map((room) => {
+        { breakoutRoomList.map((room) => {
             return <button className="breakout" key={room._id} onClick={() => changeRoom(room._id, false)}>{room.name}</button>
           })
         }
@@ -69,10 +64,8 @@ const Room = ({ room, leaveRoom, joinRoom, breakoutRoomList, parentSid }: RoomPr
       { room.sid !== parentSid &&
         <button onClick={() => changeRoom(parentSid, true)}>Return to Main Room</button>
       }
-
       <button onClick={leaveRoom}>Leave Video Call</button>
     </div>
-
   );
 }
 
