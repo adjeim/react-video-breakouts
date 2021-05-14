@@ -3,7 +3,6 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import twilio, { Twilio } from 'twilio';
 import PouchDB from 'pouchdb';
-import * as pouchFind from 'pouchdb-find';
 
 dotenv.config();
 
@@ -22,22 +21,21 @@ app.use(cors(options));
 export interface VideoRoom {
   _id: string,
   _rev: string;
-  name: string;
-  breakouts: BreakoutRoom[];
-  archived: boolean;
+  breakouts: string[];
 }
 
-export interface BreakoutRoom {
+interface MainRoomItem {
+  _id: string,
+  name: string;
+  breakouts: BreakoutRoomItem[]
+}
+
+interface BreakoutRoomItem {
   _id: string;
   name: string;
 }
 
 const db = new PouchDB<VideoRoom>('video_rooms');
-PouchDB.plugin(pouchFind);
-
-db.createIndex({
-  index: { fields: ['archived'] }
-});
 
 const twilioClient = new Twilio(
   process.env.TWILIO_API_KEY as string,
@@ -50,6 +48,7 @@ const twilioClient = new Twilio(
  */
 const createRoom = async (request: Request, response: Response) => {
   // Get the room name from the request body.
+  // If no room name is provided, the name will be set to the room's SID.
   const roomName: string = request.body.roomName || '';
 
   try {
@@ -62,19 +61,24 @@ const createRoom = async (request: Request, response: Response) => {
     const mainRoom: VideoRoom = {
       _id: room.sid,
       _rev: '',
-      name: room.uniqueName,
       breakouts: [],
-      archived: false,
     }
 
-    // Save the document in the db.
-    await db.put(mainRoom);
+    try {
+      // Save the document in the db.
+      await db.put(mainRoom);
 
-    // Return the room details in the response.
-    return response.status(200).send({
-      message: `New video room ${mainRoom.name} created`,
-      room: mainRoom
-    });
+      return response.status(200).send({
+        message: `New video room ${room.uniqueName} created`,
+        room: mainRoom
+      });
+
+    } catch (error) {
+      return response.status(400).send({
+        message: `Error saving new room to db -- room name=${roomName}`,
+        error
+      });
+    }
 
   } catch (error) {
     // If something went wrong, handle the error.
@@ -91,30 +95,41 @@ const createRoom = async (request: Request, response: Response) => {
 const createBreakoutRoom = async (request: Request, response: Response) => {
   // Get the roomName and parentSid from the request body.
   const roomName: string = request.body.roomName || '';
-  const parentSid: string = request.body.parentSid || '';
+
+  // If no parent was provided, return an error message.
+  if (!request.body.parentSid) {
+    return response.status(400).send({
+      message: `No parentSid provided for new breakout room with name=${roomName}`,
+    });
+  }
+
+  const parentSid: string = request.body.parentSid;
 
   try {
     // Call the Twilio video API to create the new room.
-    const room = await twilioClient.video.rooms.create({
+    const breakoutRoom = await twilioClient.video.rooms.create({
         uniqueName: roomName,
         type: 'group'
       });
 
-    const breakoutRoom: BreakoutRoom = {
-      name: room.uniqueName,
-      _id: room.sid,
+    try {
+      // Save the new breakout room on its parent's record (main room).
+      const mainRoom: VideoRoom = await db.get(parentSid);
+      mainRoom.breakouts.push(breakoutRoom.sid);
+      await db.put(mainRoom);
+
+      // Return the full room details in the response.
+      return response.status(200).send({
+        message: `Breakout room ${breakoutRoom.uniqueName} created`,
+        room: mainRoom
+      });
+
+    } catch (error) {
+      return response.status(400).send({
+        message: `Error saving new breakout room to db -- breakout room name=${roomName}`,
+        error
+      });
     }
-
-    // Save the new breakout room on its parent's record (main room).
-    const mainRoom: VideoRoom = await db.get(parentSid);
-    mainRoom.breakouts.push(breakoutRoom);
-    await db.put(mainRoom);
-
-    // Return the full room details in the response.
-    return response.status(200).send({
-      message: `Breakout room ${breakoutRoom.name} created`,
-      room: mainRoom
-    });
 
   } catch (error) {
     // If something went wrong, handle the error.
@@ -133,81 +148,78 @@ const listActiveRooms = async (request: Request, response: Response) => {
     // Get the last 20 rooms that are still currently in progress.
     const rooms = await twilioClient.video.rooms.list({status: 'in-progress', limit: 20});
 
-    // Sync the status of the rooms in your db with their statuses coming back from the Twilio API.
+    // Get a list of active room sids.
     let activeRoomSids = rooms.map((room) => room.sid);
 
-    // Find all video rooms in your database that are not archived.
-    let dbActiveRooms: PouchDB.Find.FindResponse<VideoRoom> = await db.find({
-      selector: {
-        archived: false
-      }
-    });
+    try {
+      // Retrieve the room documents from the database.
+      let dbRooms = await db.allDocs({
+        include_docs: true,
+      });
 
-    // Filter to get the db docs that are not yet archived but also not in the active rooms list.
-    let docsToUpdate = dbActiveRooms.docs.filter(room => {
-      return (!activeRoomSids.includes(room._id) && !room.archived)
-    })
+      // Filter the documents to include only the main rooms that are active.
+      let dbActiveRooms = dbRooms.rows.filter((mainRoomRecord) => {
+        return activeRoomSids.includes(mainRoomRecord.id) && mainRoomRecord
+      });
 
-    // Update the documents that need to be archived.
-    docsToUpdate.forEach((doc) => {
-        doc.archived = true;
-    });
+    // Create a list of MainRoomItem that will associate a room's id with its name and breakout rooms.
+    let videoRooms: MainRoomItem[] = [];
 
-    // Then, bulk save those docs to the database.
-    db.bulkDocs(docsToUpdate)
+    // For each of the active rooms from the db, get the details for that main room and its breakout rooms.
+    // Then pass that data into an array to return to the client side.
+    if (dbActiveRooms) {
+      dbActiveRooms.forEach((row) => {
+        // Find the specific main room in the list of rooms returned from the Twilio Rooms API.
+        const activeMainRoom = rooms.find((mainRoom) => {
+          return mainRoom.sid === row.doc._id;
+        })
 
-    // Get the revised list of active room documents.
-    let dbUpdatedActiveRooms = await db.find({
-      selector: {
-        archived: false
-      }
-    });
+        // Get the list of breakout rooms from this room's document.
+        const breakoutSids = row.doc.breakouts;
+
+        // Filter to select only the breakout rooms that are active according to
+        // the response from the Twilio Rooms API.
+        const activeBreakoutRooms = rooms.filter((breakoutRoom) => {
+          return breakoutSids.includes(breakoutRoom.sid);
+        });
+
+        // Create a list of BreakoutRoomItems that will contain each breakout room's name and id.
+        let breakouts: BreakoutRoomItem[] = [];
+
+        // Get the names of each breakout room from the API response.
+        activeBreakoutRooms.forEach((breakoutRoom) => {
+          breakouts.push({
+            _id: breakoutRoom.sid,
+            name: breakoutRoom.uniqueName
+          })
+        });
+
+        const videoRoom: MainRoomItem = {
+          _id: activeMainRoom.sid,
+          name: activeMainRoom.uniqueName,
+          breakouts: breakouts
+        };
+
+        // Add this room to the list of rooms to return to the client side.
+        videoRooms.push(videoRoom);
+      });
+    }
 
     // Return the list of active rooms to the client side.
     return response.status(200).send({
-      rooms: dbUpdatedActiveRooms.docs
+      rooms: videoRooms,
     });
 
-  } catch (error) {
-    return response.status(400).send({
-      message: `Unable to list active rooms`,
-      error
-    });
-  }
-};
-
-/**
- * Get a specific main room by its SID (unique identifier)
- */
-const getRoom =  async (request: Request, response: Response) => {
-  const sid: string = request.params.sid;
-
-  try {
-    // Look up this room in the database.
-    let videoRoom: VideoRoom = await db.get(sid);
-
-    // Call the Twilio video API to retrieve the room you created.
-    const room = await twilioClient.video.rooms(sid).fetch();
-
-    // If the room is active, return its details to the client side.
-    if (room.status === 'in-progress') {
-      return response.status(200).send({room: videoRoom});
-    } else {
-      // If room is inactive, update its document in the database.
-      if (!videoRoom.archived) {
-        videoRoom.archived = true;
-        await db.put(videoRoom);
-      }
-      // Let the client side know that this room is not active.
-      return response.status(200).send({
-        message: `Room ${room.uniqueName} is no longer active.`
+    } catch (error) {
+      return response.status(400).send({
+        message: `Error retrieving video rooms from db`,
+        error
       });
     }
 
   } catch (error) {
-    console.log(error)
     return response.status(400).send({
-      message: `Unable to get room with sid=${sid}`,
+      message: `Unable to list active rooms`,
       error
     });
   }
@@ -223,13 +235,13 @@ const getToken = (request: Request, response: Response) => {
   // Get the user's identity and roomSid from the query.
   const { identity, roomSid } = request.body;
 
-// Create the access token.
-const token = new AccessToken(
-    process.env.TWILIO_ACCOUNT_SID as string,
-    process.env.TWILIO_API_KEY as string,
-    process.env.TWILIO_API_SECRET as string,
-    { identity: identity as string }
-  );
+  // Create the access token.
+  const token = new AccessToken(
+      process.env.TWILIO_ACCOUNT_SID as string,
+      process.env.TWILIO_API_KEY as string,
+      process.env.TWILIO_API_SECRET as string,
+      { identity: identity as string }
+    );
 
   token.identity = identity;
 
@@ -245,7 +257,6 @@ const token = new AccessToken(
 app.post('/rooms/main', createRoom);
 app.post('/rooms/breakout', createBreakoutRoom);
 app.get('/rooms/', listActiveRooms);
-app.get('/rooms/:sid', getRoom);
 app.post('/token', getToken);
 
 app.listen(port, () => {
