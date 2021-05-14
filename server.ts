@@ -3,6 +3,7 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import twilio, { Twilio } from 'twilio';
 import PouchDB from 'pouchdb';
+import { Server } from 'socket.io';
 
 dotenv.config();
 
@@ -68,10 +69,13 @@ const createRoom = async (request: Request, response: Response) => {
       // Save the document in the db.
       await db.put(mainRoom);
 
-      return response.status(200).send({
+      response.status(200).send({
         message: `New video room ${room.uniqueName} created`,
         room: mainRoom
       });
+
+      io.emit('Main room created');
+      return;
 
     } catch (error) {
       return response.status(400).send({
@@ -119,10 +123,13 @@ const createBreakoutRoom = async (request: Request, response: Response) => {
       await db.put(mainRoom);
 
       // Return the full room details in the response.
-      return response.status(200).send({
+      response.status(200).send({
         message: `Breakout room ${breakoutRoom.uniqueName} created`,
         room: mainRoom
       });
+
+      io.emit('Breakout room created');
+      return;
 
     } catch (error) {
       return response.status(400).send({
@@ -259,6 +266,8 @@ app.post('/rooms/breakout', createBreakoutRoom);
 app.get('/rooms/', listActiveRooms);
 app.post('/token', getToken);
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`Express server running on port ${port}`);
 });
+
+const io = new Server(server);
