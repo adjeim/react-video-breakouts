@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { connect, Room as VideoRoom } from 'twilio-video';
 import './App.css';
-import socketIOClient from 'socket.io-client';
+import io, { Socket } from 'socket.io-client';
 import Room from './Room';
 
 export interface MainRoom {
@@ -23,17 +23,28 @@ const App = () => {
   const [showControls, setShowControls] = useState(false);
   const [newRoomName, setNewRoomName] = useState('');
   const [parentSid, setParentSid] = useState('');
-  const [socket, setSocket] = useState<SocketIOClient.Socket | null>(null);
+  const [socket, setSocket] = useState<Socket | null>(null);
 
   useEffect(() => {
-    const socket = socketIOClient(process.env.REACT_APP_SOCKET_URL as string, { transports: ['websocket'] });
+    if (process.env.REACT_APP_SOCKET_URL) {
+      const socket = io(process.env.REACT_APP_SOCKET_URL, { transports: ['websocket'] });
 
-    // Listen for events
-    socket.on('Main room created', () => listRooms());
-    socket.on('Breakout room created', () => listRooms());
+      // Listen for events
+      socket.on('Main room created', () => listRooms());
+      socket.on('Breakout room created', () => listRooms());
 
-    setSocket(socket);
+      setSocket(socket);
+    }
+
     listRooms();
+
+    // Clean up the listeners when the component is about to unmount.
+    return () => {
+      if (socket) {
+        socket.off('Main room created')
+        socket.off('Breakout room created')
+      }
+    }
   }, []);
 
   // Show or hide the controls when a user checks the checkbox.
